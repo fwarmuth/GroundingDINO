@@ -50,6 +50,43 @@ def load_image(image_path: str) -> Tuple[np.array, torch.Tensor]:
     return image, image_transformed
 
 
+def detect(model, images, captions, box_threshold = 0.3, text_threshold = 0.25, device='cuda'):
+
+    captions = [preprocess_caption(caption) for caption in captions]
+
+    model = model.to(device)
+
+    images = torch.stack(images)
+    images = images.to(device)
+
+    with torch.no_grad():
+        outputs = model(images, captions=captions)
+
+    prediction_logits = outputs["pred_logits"].cpu().sigmoid()  # prediction_logits.shape = (bsz，nq, 256)
+    prediction_boxes = outputs["pred_boxes"].cpu()  # prediction_boxes.shape = (bsz, nq, 4)
+
+    prompts = []
+    logits_res = []
+    boxs_res = []
+    phrases_list = []
+    tokenizer = model.tokenizer
+    for ub_logits, ub_boxes, ub_captions in zip(prediction_logits, prediction_boxes, captions):
+        mask = ub_logits.max(dim=1)[0] > box_threshold
+        logits = ub_logits[mask]  # logits.shape = (n, 256)
+        boxes = ub_boxes[mask]  # boxes.shape = (n, 4)
+        logits_res.append(logits.max(dim=1)[0])
+        boxs_res.append(boxes)
+
+        tokenized = tokenizer(ub_captions)
+        phrases = [
+            get_phrases_from_posmap(logit > text_threshold, tokenized, tokenizer).replace('.', '')
+            for logit
+            in logits
+        ]
+        phrases_list.append(phrases)
+        prompts.append([ub_captions for _ in range(len(boxes))])
+    return prompts, boxs_res, logits_res, phrases_list
+
 def predict(
         model,
         image: torch.Tensor,
@@ -94,7 +131,7 @@ def predict(
             in logits
         ]
 
-    return boxes, logits.max(dim=1)[0], phrases
+    return caption, boxes, logits.max(dim=1)[0], phrases
 
 
 def annotate(image_source: np.ndarray, boxes: torch.Tensor, logits: torch.Tensor, phrases: List[str]) -> np.ndarray:
